@@ -1,0 +1,834 @@
+// LAN Chat Application
+// Built with vanilla JavaScript - no frameworks required
+
+class LanChatApp {
+  constructor() {
+    this.serverManager = new ServerManager();
+    this.chatManager = new ChatManager();
+    this.profileManager = new ProfileManager();
+    this.uiController = new UIController(this);
+    
+    this.currentModel = null;
+    this.currentProfile = null;
+    this.isGenerating = false;
+    
+    this.init();
+  }
+  
+  async init() {
+    console.log('Initializing LAN Chat...');
+    
+    // Initialize managers
+    await this.profileManager.init();
+    this.uiController.init();
+    
+    // Load saved settings
+    this.loadSettings();
+    
+    // Initial server connection attempt
+    await this.connectToServer();
+    
+    console.log('LAN Chat initialized successfully');
+  }
+  
+  loadSettings() {
+    const settings = localStorage.getItem('lan-chat-settings');
+    if (settings) {
+      const parsed = JSON.parse(settings);
+      this.serverManager.serverUrl = parsed.serverUrl || 'http://localhost:11434';
+      // Update UI
+      this.uiController.updateServerUrl(this.serverManager.serverUrl);
+    }
+  }
+  
+  saveSettings() {
+    const settings = {
+      serverUrl: this.serverManager.serverUrl,
+      timestamp: Date.now()
+    };
+    localStorage.setItem('lan-chat-settings', JSON.stringify(settings));
+  }
+  
+  async connectToServer() {
+    this.uiController.setConnectionStatus('connecting');
+    
+    try {
+      const models = await this.serverManager.discoverModels();
+      this.uiController.setConnectionStatus('connected');
+      this.uiController.updateModelList(models);
+      
+      // Auto-select first model if none selected
+      if (!this.currentModel && models.length > 0) {
+        this.selectModel(models[0].name);
+      }
+      
+    } catch (error) {
+      console.error('Connection failed:', error);
+      this.uiController.setConnectionStatus('error', error.message);
+      this.uiController.updateModelList([]);
+    }
+  }
+  
+  selectModel(modelName) {
+    this.currentModel = modelName;
+    this.uiController.selectModel(modelName);
+    console.log(`Selected model: ${modelName}`);
+  }
+  
+  selectProfile(profileId) {
+    this.currentProfile = this.profileManager.getProfile(profileId);
+    console.log(`Selected profile: ${this.currentProfile?.name || 'Default'}`);
+  }
+  
+  async sendMessage(content) {
+    if (!content.trim() || this.isGenerating) return;
+    if (!this.currentModel) {
+      this.uiController.showError('Please select a model first');
+      return;
+    }
+    
+    this.isGenerating = true;
+    this.uiController.setGenerationState(true);
+    
+    try {
+      // Add user message
+      const userMessage = this.chatManager.addMessage('user', content);
+      this.uiController.addMessage(userMessage);
+      
+      // Create assistant message placeholder
+      const assistantMessage = this.chatManager.addMessage('assistant', '');
+      const messageElement = this.uiController.addMessage(assistantMessage, true);
+      
+      // Send to server and stream response
+      await this.serverManager.sendChatMessage(
+        this.currentModel,
+        this.chatManager.getMessages(),
+        this.currentProfile,
+        (chunk) => {
+          assistantMessage.content += chunk;
+          this.uiController.updateMessageContent(messageElement, assistantMessage.content);
+        }
+      );
+      
+    } catch (error) {
+      console.error('Chat error:', error);
+      this.uiController.showError(`Chat error: ${error.message}`);
+      // Remove failed assistant message
+      this.chatManager.removeLastMessage();
+      this.uiController.removeLastMessage();
+    } finally {
+      this.isGenerating = false;
+      this.uiController.setGenerationState(false);
+    }
+  }
+  
+  stopGeneration() {
+    this.serverManager.abortCurrentRequest();
+    this.isGenerating = false;
+    this.uiController.setGenerationState(false);
+  }
+  
+  clearChat() {
+    this.chatManager.clearMessages();
+    this.uiController.clearMessages();
+  }
+  
+  updateServerUrl(url) {
+    this.serverManager.serverUrl = url;
+    this.saveSettings();
+    this.connectToServer();
+  }
+}
+
+// Server Management Class
+class ServerManager {
+  constructor() {
+    this.serverUrl = 'http://localhost:11434';
+    this.abortController = null;
+  }
+  
+  async discoverModels() {
+    const response = await this.fetchWithTimeout(`${this.serverUrl}/api/tags`, {
+      method: 'GET',
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data.models || [];
+  }
+  
+  async sendChatMessage(model, messages, profile, onChunk) {
+    this.abortController = new AbortController();
+    
+    // Build request body
+    const requestBody = {
+      model: model,
+      messages: this.buildMessagesForAPI(messages, profile),
+      stream: true
+    };
+    
+    // Add profile temperature if available
+    if (profile?.temperature !== undefined) {
+      requestBody.options = { temperature: profile.temperature };
+    }
+    
+    const response = await this.fetchWithTimeout(`${this.serverUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+      signal: this.abortController.signal
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Chat request failed: ${response.status} ${response.statusText}`);
+    }
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) break;
+        
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n').filter(line => line.trim());
+        
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed.message && parsed.message.content) {
+              onChunk(parsed.message.content);
+            }
+            
+            if (parsed.done) {
+              return;
+            }
+          } catch (e) {
+            // Skip invalid JSON lines
+            console.warn('Invalid JSON line:', line);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  
+  buildMessagesForAPI(messages, profile) {
+    const apiMessages = [];
+    
+    // Add system message from profile if available
+    if (profile?.systemPrompt) {
+      apiMessages.push({
+        role: 'system',
+        content: profile.systemPrompt
+      });
+    }
+    
+    // Add conversation messages
+    for (const msg of messages) {
+      apiMessages.push({
+        role: msg.role,
+        content: msg.content
+      });
+    }
+    
+    return apiMessages;
+  }
+  
+  abortCurrentRequest() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+  
+  async fetchWithTimeout(url, options, timeout = 30000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      return response;
+    } catch (error) {
+      clearTimeout(id);
+      if (error.name === 'AbortError') {
+        throw new Error('Request timeout');
+      }
+      throw error;
+    }
+  }
+}
+
+// Chat Management Class
+class ChatManager {
+  constructor() {
+    this.messages = [];
+  }
+  
+  addMessage(role, content) {
+    const message = {
+      id: this.generateId(),
+      role: role,
+      content: content,
+      timestamp: new Date()
+    };
+    
+    this.messages.push(message);
+    return message;
+  }
+  
+  removeLastMessage() {
+    return this.messages.pop();
+  }
+  
+  getMessages() {
+    return this.messages;
+  }
+  
+  clearMessages() {
+    this.messages = [];
+  }
+  
+  generateId() {
+    return Math.random().toString(36).substr(2, 9);
+  }
+}
+
+// Profile Management Class
+class ProfileManager {
+  constructor() {
+    this.profiles = new Map();
+  }
+  
+  async init() {
+    this.loadProfiles();
+    
+    // Ensure default profiles exist
+    this.ensureDefaultProfiles();
+  }
+  
+  loadProfiles() {
+    const saved = localStorage.getItem('lan-chat-profiles');
+    if (saved) {
+      try {
+        const profiles = JSON.parse(saved);
+        for (const profile of profiles) {
+          this.profiles.set(profile.id, profile);
+        }
+      } catch (error) {
+        console.error('Failed to load profiles:', error);
+      }
+    }
+  }
+  
+  saveProfiles() {
+    const profiles = Array.from(this.profiles.values());
+    localStorage.setItem('lan-chat-profiles', JSON.stringify(profiles));
+  }
+  
+  ensureDefaultProfiles() {
+    const defaultProfiles = [
+      {
+        id: 'default',
+        name: 'Default Assistant',
+        systemPrompt: 'You are a helpful, harmless, and honest assistant.',
+        temperature: 0.7,
+        isDefault: true
+      },
+      {
+        id: 'creative',
+        name: 'Creative Writer',
+        systemPrompt: 'You are a creative writing assistant who helps with storytelling, poetry, and creative expression. Be imaginative and inspiring.',
+        temperature: 0.9,
+        isDefault: false
+      },
+      {
+        id: 'code',
+        name: 'Code Helper',
+        systemPrompt: 'You are a programming assistant. Provide clear, well-commented code examples and explain technical concepts clearly.',
+        temperature: 0.3,
+        isDefault: false
+      }
+    ];
+    
+    for (const profile of defaultProfiles) {
+      if (!this.profiles.has(profile.id)) {
+        this.profiles.set(profile.id, profile);
+      }
+    }
+    
+    this.saveProfiles();
+  }
+  
+  getProfile(id) {
+    return this.profiles.get(id);
+  }
+  
+  getAllProfiles() {
+    return Array.from(this.profiles.values());
+  }
+  
+  saveProfile(profile) {
+    if (!profile.id) {
+      profile.id = this.generateId();
+    }
+    
+    this.profiles.set(profile.id, profile);
+    this.saveProfiles();
+    return profile;
+  }
+  
+  deleteProfile(id) {
+    // Don't allow deletion of default profile
+    if (id === 'default') return false;
+    
+    const deleted = this.profiles.delete(id);
+    if (deleted) {
+      this.saveProfiles();
+    }
+    return deleted;
+  }
+  
+  generateId() {
+    return 'profile-' + Math.random().toString(36).substr(2, 9);
+  }
+}
+
+// UI Controller Class
+class UIController {
+  constructor(app) {
+    this.app = app;
+    this.elements = {};
+    this.currentEditingProfile = null;
+  }
+  
+  init() {
+    this.cacheElements();
+    this.bindEvents();
+    this.updateProfileList();
+    this.selectProfile('default');
+  }
+  
+  cacheElements() {
+    this.elements = {
+      // Status
+      statusIndicator: document.getElementById('status-indicator'),
+      statusText: document.getElementById('status-text'),
+      
+      // Controls
+      serverSelect: document.getElementById('server-select'),
+      modelSelect: document.getElementById('model-select'),
+      profileSelect: document.getElementById('profile-select'),
+      
+      // Chat
+      chatMessages: document.getElementById('chat-messages'),
+      chatInput: document.getElementById('chat-input'),
+      sendBtn: document.getElementById('send-btn'),
+      
+      // Buttons
+      settingsBtn: document.getElementById('settings-btn'),
+      profileManageBtn: document.getElementById('profile-manage-btn'),
+      clearChatBtn: document.getElementById('clear-chat-btn'),
+      stopGenerationBtn: document.getElementById('stop-generation-btn'),
+      
+      // Modals
+      settingsModal: document.getElementById('settings-modal'),
+      profileModal: document.getElementById('profile-modal'),
+      
+      // Settings
+      serverUrl: document.getElementById('server-url'),
+      temperature: document.getElementById('temperature'),
+      temperatureValue: document.getElementById('temperature-value'),
+      
+      // Profile Management
+      profileList: document.getElementById('profile-list'),
+      profileForm: document.getElementById('profile-form'),
+      profileName: document.getElementById('profile-name'),
+      profilePrompt: document.getElementById('profile-prompt'),
+      profileTemp: document.getElementById('profile-temp'),
+      profileTempValue: document.getElementById('profile-temp-value')
+    };
+  }
+  
+  bindEvents() {
+    // Chat input
+    this.elements.chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.handleSendMessage();
+      }
+    });
+    
+    this.elements.chatInput.addEventListener('input', () => {
+      this.adjustTextareaHeight();
+      this.updateSendButton();
+    });
+    
+    this.elements.sendBtn.addEventListener('click', () => {
+      this.handleSendMessage();
+    });
+    
+    // Controls
+    this.elements.modelSelect.addEventListener('change', (e) => {
+      this.app.selectModel(e.target.value);
+    });
+    
+    this.elements.profileSelect.addEventListener('change', (e) => {
+      this.app.selectProfile(e.target.value);
+    });
+    
+    // Buttons
+    this.elements.settingsBtn.addEventListener('click', () => {
+      this.showSettingsModal();
+    });
+    
+    this.elements.profileManageBtn.addEventListener('click', () => {
+      this.showProfileModal();
+    });
+    
+    this.elements.clearChatBtn.addEventListener('click', () => {
+      this.app.clearChat();
+    });
+    
+    this.elements.stopGenerationBtn.addEventListener('click', () => {
+      this.app.stopGeneration();
+    });
+    
+    // Settings
+    this.elements.temperature.addEventListener('input', (e) => {
+      this.elements.temperatureValue.textContent = e.target.value;
+    });
+    
+    // Profile temperature
+    this.elements.profileTemp.addEventListener('input', (e) => {
+      this.elements.profileTempValue.textContent = e.target.value;
+    });
+    
+    // Modal close handlers
+    this.bindModalEvents();
+  }
+  
+  bindModalEvents() {
+    // Settings modal
+    document.getElementById('settings-close').addEventListener('click', () => {
+      this.hideModal('settings');
+    });
+    
+    document.getElementById('settings-save').addEventListener('click', () => {
+      this.saveSettings();
+    });
+    
+    document.getElementById('settings-cancel').addEventListener('click', () => {
+      this.hideModal('settings');
+    });
+    
+    // Profile modal
+    document.getElementById('profile-close').addEventListener('click', () => {
+      this.hideModal('profile');
+    });
+    
+    document.getElementById('profile-new').addEventListener('click', () => {
+      this.showProfileForm();
+    });
+    
+    document.getElementById('profile-save').addEventListener('click', () => {
+      this.saveProfile();
+    });
+    
+    document.getElementById('profile-cancel').addEventListener('click', () => {
+      this.hideProfileForm();
+    });
+    
+    // Close modals on outside click
+    [this.elements.settingsModal, this.elements.profileModal].forEach(modal => {
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          modal.classList.remove('show');
+        }
+      });
+    });
+  }
+  
+  handleSendMessage() {
+    const content = this.elements.chatInput.value.trim();
+    if (!content) return;
+    
+    this.elements.chatInput.value = '';
+    this.adjustTextareaHeight();
+    this.updateSendButton();
+    
+    this.app.sendMessage(content);
+  }
+  
+  adjustTextareaHeight() {
+    const textarea = this.elements.chatInput;
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+  }
+  
+  updateSendButton() {
+    const hasContent = this.elements.chatInput.value.trim().length > 0;
+    this.elements.sendBtn.disabled = !hasContent || this.app.isGenerating;
+  }
+  
+  setConnectionStatus(status, message = '') {
+    this.elements.statusIndicator.className = `status-indicator ${status}`;
+    
+    const statusMessages = {
+      connecting: 'Connecting...',
+      connected: 'Connected',
+      error: message || 'Connection failed'
+    };
+    
+    this.elements.statusText.textContent = statusMessages[status] || status;
+  }
+  
+  updateModelList(models) {
+    this.elements.modelSelect.innerHTML = '';
+    
+    if (models.length === 0) {
+      this.elements.modelSelect.innerHTML = '<option value="">No models available</option>';
+      return;
+    }
+    
+    for (const model of models) {
+      const option = document.createElement('option');
+      option.value = model.name;
+      option.textContent = model.name;
+      this.elements.modelSelect.appendChild(option);
+    }
+  }
+  
+  selectModel(modelName) {
+    this.elements.modelSelect.value = modelName;
+  }
+  
+  updateServerUrl(url) {
+    this.elements.serverUrl.value = url;
+  }
+  
+  addMessage(message, isStreaming = false) {
+    // Remove welcome message if it exists
+    const welcomeMessage = this.elements.chatMessages.querySelector('.welcome-message');
+    if (welcomeMessage) {
+      welcomeMessage.remove();
+    }
+    
+    const messageElement = document.createElement('div');
+    messageElement.className = `message ${message.role}`;
+    messageElement.innerHTML = `
+      <div class="message-avatar">${message.role === 'user' ? '=d' : '>'}</div>
+      <div class="message-content">
+        <div class="message-text">${isStreaming ? '<span class="message-loading"></span>' : this.formatContent(message.content)}</div>
+        <div class="message-time">${this.formatTime(message.timestamp)}</div>
+      </div>
+    `;
+    
+    this.elements.chatMessages.appendChild(messageElement);
+    this.scrollToBottom();
+    
+    return messageElement;
+  }
+  
+  updateMessageContent(messageElement, content) {
+    const textElement = messageElement.querySelector('.message-text');
+    textElement.innerHTML = this.formatContent(content);
+    this.scrollToBottom();
+  }
+  
+  removeLastMessage() {
+    const messages = this.elements.chatMessages.querySelectorAll('.message');
+    if (messages.length > 0) {
+      messages[messages.length - 1].remove();
+    }
+  }
+  
+  clearMessages() {
+    this.elements.chatMessages.innerHTML = `
+      <div class="welcome-message">
+        <h3>Welcome to LAN Chat!</h3>
+        <p>Select a model and start chatting with your local AI.</p>
+      </div>
+    `;
+  }
+  
+  setGenerationState(isGenerating) {
+    this.updateSendButton();
+    this.elements.stopGenerationBtn.style.display = isGenerating ? 'inline-block' : 'none';
+  }
+  
+  formatContent(content) {
+    // Simple formatting - escape HTML and handle line breaks
+    return content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+  }
+  
+  formatTime(date) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  
+  scrollToBottom() {
+    this.elements.chatMessages.scrollTop = this.elements.chatMessages.scrollHeight;
+  }
+  
+  showError(message) {
+    // Simple error display - could be enhanced with toast notifications
+    alert(message);
+  }
+  
+  // Modal management
+  showModal(modalName) {
+    const modal = document.getElementById(`${modalName}-modal`);
+    modal.classList.add('show');
+  }
+  
+  hideModal(modalName) {
+    const modal = document.getElementById(`${modalName}-modal`);
+    modal.classList.remove('show');
+  }
+  
+  showSettingsModal() {
+    this.elements.serverUrl.value = this.app.serverManager.serverUrl;
+    this.showModal('settings');
+  }
+  
+  saveSettings() {
+    const newServerUrl = this.elements.serverUrl.value.trim();
+    if (newServerUrl && newServerUrl !== this.app.serverManager.serverUrl) {
+      this.app.updateServerUrl(newServerUrl);
+    }
+    this.hideModal('settings');
+  }
+  
+  // Profile management
+  updateProfileList() {
+    const profiles = this.app.profileManager.getAllProfiles();
+    
+    // Update select dropdown
+    this.elements.profileSelect.innerHTML = '';
+    for (const profile of profiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = profile.name;
+      this.elements.profileSelect.appendChild(option);
+    }
+    
+    // Update profile management list
+    this.elements.profileList.innerHTML = '';
+    for (const profile of profiles) {
+      const item = document.createElement('div');
+      item.className = 'profile-item';
+      item.innerHTML = `
+        <div class="profile-info">
+          <h4>${profile.name}</h4>
+          <p>${profile.systemPrompt.substring(0, 100)}...</p>
+        </div>
+        <div class="profile-actions">
+          <button class="profile-action-btn" onclick="ui.editProfile('${profile.id}')">Edit</button>
+          ${!profile.isDefault ? `<button class="profile-action-btn" onclick="ui.deleteProfile('${profile.id}')">Delete</button>` : ''}
+        </div>
+      `;
+      this.elements.profileList.appendChild(item);
+    }
+  }
+  
+  selectProfile(profileId) {
+    this.elements.profileSelect.value = profileId;
+    this.app.selectProfile(profileId);
+  }
+  
+  showProfileModal() {
+    this.updateProfileList();
+    this.showModal('profile');
+  }
+  
+  showProfileForm(profile = null) {
+    this.currentEditingProfile = profile;
+    
+    if (profile) {
+      this.elements.profileName.value = profile.name;
+      this.elements.profilePrompt.value = profile.systemPrompt;
+      this.elements.profileTemp.value = profile.temperature;
+      this.elements.profileTempValue.textContent = profile.temperature;
+    } else {
+      this.elements.profileName.value = '';
+      this.elements.profilePrompt.value = '';
+      this.elements.profileTemp.value = '0.7';
+      this.elements.profileTempValue.textContent = '0.7';
+    }
+    
+    this.elements.profileForm.style.display = 'block';
+    document.getElementById('profile-new').style.display = 'none';
+    document.getElementById('profile-save').style.display = 'inline-block';
+    document.getElementById('profile-cancel').style.display = 'inline-block';
+  }
+  
+  hideProfileForm() {
+    this.elements.profileForm.style.display = 'none';
+    document.getElementById('profile-new').style.display = 'inline-block';
+    document.getElementById('profile-save').style.display = 'none';
+    document.getElementById('profile-cancel').style.display = 'none';
+    this.currentEditingProfile = null;
+  }
+  
+  saveProfile() {
+    const name = this.elements.profileName.value.trim();
+    const systemPrompt = this.elements.profilePrompt.value.trim();
+    const temperature = parseFloat(this.elements.profileTemp.value);
+    
+    if (!name || !systemPrompt) {
+      this.showError('Please fill in all fields');
+      return;
+    }
+    
+    const profile = {
+      id: this.currentEditingProfile?.id || null,
+      name: name,
+      systemPrompt: systemPrompt,
+      temperature: temperature,
+      isDefault: false
+    };
+    
+    this.app.profileManager.saveProfile(profile);
+    this.updateProfileList();
+    this.hideProfileForm();
+  }
+  
+  editProfile(profileId) {
+    const profile = this.app.profileManager.getProfile(profileId);
+    if (profile) {
+      this.showProfileForm(profile);
+    }
+  }
+  
+  deleteProfile(profileId) {
+    if (confirm('Are you sure you want to delete this profile?')) {
+      this.app.profileManager.deleteProfile(profileId);
+      this.updateProfileList();
+    }
+  }
+}
+
+// Global reference for inline event handlers
+let ui;
+
+// Initialize the application when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  const app = new LanChatApp();
+  ui = app.uiController; // Global reference for inline handlers
+});
