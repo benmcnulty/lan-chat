@@ -12,9 +12,15 @@
         <header class="app-header">
             <div class="header-content">
                 <h1 class="app-title">LAN Chat</h1>
-                <div class="connection-status">
-                    <div class="status-indicator" id="status-indicator"></div>
-                    <span class="status-text" id="status-text">Connecting...</span>
+                <div class="header-controls">
+                    <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                        <span class="theme-icon sun-icon">☀️</span>
+                        <span class="theme-icon moon-icon">🌙</span>
+                    </button>
+                    <div class="connection-status">
+                        <div class="status-indicator" id="status-indicator"></div>
+                        <span class="status-text" id="status-text">Connecting...</span>
+                    </div>
                 </div>
             </div>
         </header>
@@ -26,7 +32,7 @@
                 <select id="server-select" class="control-select">
                     <option value="http://localhost:11434">Local Ollama (11434)</option>
                 </select>
-                <button id="settings-btn" class="control-btn" title="Settings">�</button>
+                <button type="button" id="settings-btn" class="control-btn" title="Settings">⚙️</button>
             </div>
             
             <div class="control-group">
@@ -41,7 +47,7 @@
                 <select id="profile-select" class="control-select">
                     <option value="default">Default Assistant</option>
                 </select>
-                <button id="profile-manage-btn" class="control-btn" title="Manage Profiles">=d</button>
+                <button type="button" id="profile-manage-btn" class="control-btn" title="Manage Profiles">👤</button>
             </div>
         </div>
 
@@ -65,13 +71,13 @@
                         placeholder="Type your message here..." 
                         rows="1"
                     ></textarea>
-                    <button id="send-btn" class="send-btn" disabled>
-                        <span class="send-icon"></span>
+                    <button type="button" id="send-btn" class="send-btn" disabled>
+                        <span class="send-icon">⬆</span>
                     </button>
                 </div>
                 <div class="input-controls">
-                    <button id="clear-chat-btn" class="input-control-btn">Clear Chat</button>
-                    <button id="stop-generation-btn" class="input-control-btn" style="display: none;">Stop</button>
+                    <button type="button" id="clear-chat-btn" class="input-control-btn">Clear Chat</button>
+                    <button type="button" id="stop-generation-btn" class="input-control-btn hidden">Stop</button>
                 </div>
             </div>
         </main>
@@ -81,7 +87,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3>Settings</h3>
-                    <button class="modal-close" id="settings-close">&times;</button>
+                    <button type="button" class="modal-close" id="settings-close">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="setting-group">
@@ -96,8 +102,8 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button id="settings-save" class="btn-primary">Save</button>
-                    <button id="settings-cancel" class="btn-secondary">Cancel</button>
+                    <button type="button" id="settings-save" class="btn-primary">Save</button>
+                    <button type="button" id="settings-cancel" class="btn-secondary">Cancel</button>
                 </div>
             </div>
         </div>
@@ -107,13 +113,13 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3>Manage Profiles</h3>
-                    <button class="modal-close" id="profile-close">&times;</button>
+                    <button type="button" class="modal-close" id="profile-close">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="profile-list" id="profile-list">
                         <!-- Profiles will be populated here -->
                     </div>
-                    <div class="profile-form" id="profile-form" style="display: none;">
+                    <div class="profile-form" id="profile-form" class="hidden">
                         <div class="setting-group">
                             <label for="profile-name">Profile Name:</label>
                             <input type="text" id="profile-name" class="setting-input" placeholder="e.g., Creative Writer">
@@ -128,12 +134,31 @@
                             <input type="range" id="profile-temp" class="setting-range" min="0" max="1" step="0.1" value="0.7">
                             <span id="profile-temp-value">0.7</span>
                         </div>
+                        <div class="setting-group">
+                            <label for="profile-color">Profile Color:</label>
+                            <div class="color-picker">
+                                <div class="color-presets" id="color-presets">
+                                    <div class="color-preset active" data-color="#007acc" style="background: linear-gradient(135deg, #007acc, #0099ff);" title="Ocean Blue"></div>
+                                    <div class="color-preset" data-color="#28a745" style="background: linear-gradient(135deg, #28a745, #20c997);" title="Forest Green"></div>
+                                    <div class="color-preset" data-color="#fd7e14" style="background: linear-gradient(135deg, #fd7e14, #ffb347);" title="Sunset Orange"></div>
+                                    <div class="color-preset" data-color="#6f42c1" style="background: linear-gradient(135deg, #6f42c1, #9c88ff);" title="Royal Purple"></div>
+                                    <div class="color-preset" data-color="#e83e8c" style="background: linear-gradient(135deg, #e83e8c, #ff6b9d);" title="Rose Pink"></div>
+                                    <div class="color-preset" data-color="#ffc107" style="background: linear-gradient(135deg, #ffc107, #ffdf5d);" title="Golden Yellow"></div>
+                                    <div class="color-preset" data-color="#dc3545" style="background: linear-gradient(135deg, #dc3545, #ff4757);" title="Crimson Red"></div>
+                                </div>
+                                <div class="custom-color">
+                                    <label for="profile-color-custom">Custom:</label>
+                                    <input type="color" id="profile-color-custom" class="color-input" value="#007acc">
+                                    <input type="text" id="profile-color-hex" class="color-hex" placeholder="#007acc" maxlength="7">
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button id="profile-new" class="btn-primary">New Profile</button>
-                    <button id="profile-save" class="btn-primary" style="display: none;">Save Profile</button>
-                    <button id="profile-cancel" class="btn-secondary" style="display: none;">Cancel</button>
+                    <button type="button" id="profile-new" class="btn-primary">New Profile</button>
+                    <button type="button" id="profile-save" class="btn-primary hidden">Save Profile</button>
+                    <button type="button" id="profile-cancel" class="btn-secondary hidden">Cancel</button>
                 </div>
             </div>
         </div>
