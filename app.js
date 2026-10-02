@@ -104,6 +104,8 @@ class LanChatApp {
       // Create assistant message placeholder
       const assistantMessage = this.chatManager.addMessage('assistant', '');
       const messageElement = this.uiController.addMessage(assistantMessage, true);
+      generation.assistantMessage = assistantMessage;
+      generation.messageElement = messageElement;
       
       // Send to server and stream response
       await this.serverManager.sendChatMessage(
@@ -135,7 +137,13 @@ class LanChatApp {
   }
   
   stopGeneration() {
+    const generation = this.generationToken;
     this.generationToken = null;
+    if (generation?.assistantMessage && !generation.assistantMessage.content) {
+      // Remove this request's empty loading bubble before a restart can begin.
+      this.chatManager.removeMessage(generation.assistantMessage);
+      this.uiController.removeMessage(generation.messageElement);
+    }
     this.serverManager.abortCurrentRequest();
     this.isGenerating = false;
     this.uiController.setGenerationState(false);
@@ -384,6 +392,11 @@ class ChatManager {
   
   removeLastMessage() {
     return this.messages.pop();
+  }
+
+  removeMessage(message) {
+    const index = this.messages.indexOf(message);
+    if (index !== -1) this.messages.splice(index, 1);
   }
   
   getMessages() {
@@ -887,6 +900,10 @@ class UIController {
       lastMessage.style.animation = 'fadeOut 0.3s ease-out';
       setTimeout(() => lastMessage.remove(), 300);
     }
+  }
+
+  removeMessage(messageElement) {
+    messageElement.remove();
   }
   
   clearMessages() {

@@ -53,12 +53,14 @@ responses as untrusted content.
 
 ## Verification and contributions
 
-The 2026-10-02 stream repair passed 11 deterministic Node 24 tests plus source
+The 2026-10-02 stream repair passed 15 deterministic Node 24 tests plus source
 syntax checking, without live inference. Records and UTF8 characters may span
 network chunks; complete records are buffered before parsing, including a final
 record without a trailing newline. Intentional Stop cancels before or after
-response headers, keeps partial output and prevents obsolete generations from
-changing a restarted conversation. Malformed complete JSON reports an error
+response headers, synchronously removes its own empty loading bubble, keeps
+partial output and prevents obsolete generations from changing a restarted
+conversation. Four DOM-aware cases exercise the actual UI controller with a
+focused DOM fixture; they do not validate real-browser layout. Malformed complete JSON reports an error
 rather than silently losing records. The request timeout covers response-header
 arrival; it is not an overall generation deadline.
 
