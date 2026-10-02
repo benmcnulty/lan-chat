@@ -38,4 +38,4 @@ Since this is a vanilla web project with no build system:
 
 ## Current Status
 
-This is an initial project setup. The core files (index.html, styles.css, app.js) exist but are currently empty placeholder files. Implementation should follow the roadmap outlined in README.md.
+The core files implement model discovery, streaming chat, personality profiles, theme and settings. Conversation messages are in memory; server settings, profiles and theme use local storage. See README.md for source-grounded setup and remaining limitations. No automated suite or live-model certification is included.
