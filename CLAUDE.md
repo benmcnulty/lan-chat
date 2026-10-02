@@ -26,7 +26,7 @@ Since this is a vanilla web project with no build system:
 - **Serve with HTTP server**: Use any static file server like `python -m http.server` or `npx serve`
 - **No build step required**: All files are served directly
 - **No package manager**: No npm, yarn, or other package management needed
-- **No testing framework**: Testing would be manual in-browser testing
+- **Tests**: Node 24 built-in runner: `node --test test/server-manager.test.cjs`; no npm dependencies. Live/browser flows remain manual.
 
 ## Key Implementation Details
 
@@ -38,4 +38,4 @@ Since this is a vanilla web project with no build system:
 
 ## Current Status
 
-The core files implement model discovery, streaming chat, personality profiles, theme and settings. Conversation messages are in memory; server settings, profiles and theme use local storage. See README.md for source-grounded setup and remaining limitations. No automated suite or live-model certification is included.
+The core files implement model discovery, streaming chat, personality profiles, theme and settings. Conversation messages are in memory; server settings, profiles and theme use local storage. See README.md for source-grounded setup and remaining limitations. Eleven deterministic fake-network streaming/cancellation regressions are included; live-model/browser certification is not.

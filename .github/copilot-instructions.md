@@ -22,7 +22,7 @@ Ollama integration (HTTP API)
 - List models for dropdown: GET {BASE}/api/tags → { models: [{ name, ... }] }.
 - Chat (preferred): POST {BASE}/api/chat with JSON:
   { model, messages:[{role:'system'|'user'|'assistant', content}], stream:true }
-  Response is NDJSON (one JSON object per line). Accumulate `message.content` (or `content`) until `done:true`.
+  Response is NDJSON (one JSON object per line). Accumulate `message.content` until `done:true`.
 - The current application uses `/api/chat`; a `/api/generate` fallback is not implemented.
 
 Conventions to follow when adding code
@@ -37,6 +37,7 @@ Minimal examples (patterns to replicate)
 - Chat payload shape: { model, messages:[{role:'system',content:sys},{role:'user',content:user}], stream:true }
 
 Testing and debugging
+- Node 24: `node --check app.js` and `node --test test/server-manager.test.cjs`; fake-network tests cover record boundaries, cancellation and generation ownership. No model calls or package install.
 - Smoke tests in the browser: (1) models dropdown populates; (2) send “Hello” and see a streamed response; (3) cancellation/error handling does not leave the UI generating. Do not claim a Stop control exists without checking the actual interface.
 - Common pitfalls: CORS with `file://` origin → use a static server; mixed content if accessing non-HTTPS hosts from secure origins.
 

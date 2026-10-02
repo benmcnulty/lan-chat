@@ -53,10 +53,27 @@ responses as untrusted content.
 
 ## Verification and contributions
 
-No automated suite or CI workflow is committed. Manual verification should check
-model discovery, streaming, an unavailable server, personality create/edit/delete,
-theme persistence and refresh behavior. This documentation review inspected the
-source; it did not verify a live LAN model, mobile layout or accessibility.
+The 2026-10-02 stream repair passed 11 deterministic Node 24 tests plus source
+syntax checking, without live inference. Records and UTF8 characters may span
+network chunks; complete records are buffered before parsing, including a final
+record without a trailing newline. Intentional Stop cancels before or after
+response headers, keeps partial output and prevents obsolete generations from
+changing a restarted conversation. Malformed complete JSON reports an error
+rather than silently losing records. The request timeout covers response-header
+arrival; it is not an overall generation deadline.
+
+For automated checks, use Node 24 (no npm dependencies):
+
+```sh
+node --check app.js
+node --test test/server-manager.test.cjs
+```
+
+The browser requires streaming Fetch, TextDecoder, AbortController and
+AbortSignal.any. Read-only candidate CI repeats the syntax/regression checks and
+has no deployment step. Actual LAN/model discovery, personality CRUD, theme,
+mobile layout and accessibility remain manual checks; these were not certified
+by the fake-network suite.
 
 Follow [`AGENTS.md`](AGENTS.md) and include focused changes plus reproducible
 verification steps. The original README declares the MIT License; a standalone
