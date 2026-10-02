@@ -12,6 +12,7 @@ class LanChatApp {
     this.currentModel = null;
     this.currentProfile = null;
     this.isGenerating = false;
+    this.generationToken = null;
     
     this.init();
   }
@@ -90,6 +91,8 @@ class LanChatApp {
       return;
     }
     
+    const generation = {};
+    this.generationToken = generation;
     this.isGenerating = true;
     this.uiController.setGenerationState(true);
     
@@ -101,6 +104,8 @@ class LanChatApp {
       // Create assistant message placeholder
       const assistantMessage = this.chatManager.addMessage('assistant', '');
       const messageElement = this.uiController.addMessage(assistantMessage, true);
+      generation.assistantMessage = assistantMessage;
+      generation.messageElement = messageElement;
       
       // Send to server and stream response
       await this.serverManager.sendChatMessage(
@@ -108,24 +113,37 @@ class LanChatApp {
         this.chatManager.getMessages(),
         this.currentProfile,
         (chunk) => {
+          if (this.generationToken !== generation) return;
           assistantMessage.content += chunk;
           this.uiController.updateMessageContent(messageElement, assistantMessage.content);
         }
       );
       
     } catch (error) {
+      // Intentional stop keeps the partial answer; obsolete requests own no UI.
+      if (this.generationToken !== generation || error.name === 'AbortError') return;
       console.error('Chat error:', error);
       this.uiController.showError(`Chat error: ${error.message}`);
       // Remove failed assistant message
       this.chatManager.removeLastMessage();
       this.uiController.removeLastMessage();
     } finally {
-      this.isGenerating = false;
-      this.uiController.setGenerationState(false);
+      if (this.generationToken === generation) {
+        this.generationToken = null;
+        this.isGenerating = false;
+        this.uiController.setGenerationState(false);
+      }
     }
   }
   
   stopGeneration() {
+    const generation = this.generationToken;
+    this.generationToken = null;
+    if (generation?.assistantMessage && !generation.assistantMessage.content) {
+      // Remove this request's empty loading bubble before a restart can begin.
+      this.chatManager.removeMessage(generation.assistantMessage);
+      this.uiController.removeMessage(generation.messageElement);
+    }
     this.serverManager.abortCurrentRequest();
     this.isGenerating = false;
     this.uiController.setGenerationState(false);
@@ -240,63 +258,68 @@ class ServerManager {
   }
   
   async sendChatMessage(model, messages, profile, onChunk) {
-    this.abortController = new AbortController();
-    
-    // Build request body
+    const requestController = new AbortController();
+    this.abortController = requestController;
     const requestBody = {
-      model: model,
+      model,
       messages: this.buildMessagesForAPI(messages, profile),
       stream: true
     };
-    
-    // Add profile temperature if available
     if (profile?.temperature !== undefined) {
       requestBody.options = { temperature: profile.temperature };
     }
-    
-    const response = await this.fetchWithTimeout(`${this.serverUrl}/api/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-      signal: this.abortController.signal
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Chat request failed: ${response.status} ${response.statusText}`);
-    }
-    
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    
+
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) break;
-        
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n').filter(line => line.trim());
-        
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line);
-            if (parsed.message && parsed.message.content) {
-              onChunk(parsed.message.content);
-            }
-            
-            if (parsed.done) {
-              return;
-            }
-          } catch (e) {
-            // Skip invalid JSON lines
-            console.warn('Invalid JSON line:', line);
+      const response = await this.fetchWithTimeout(`${this.serverUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: requestController.signal
+      });
+      if (!response.ok) {
+        throw new Error(`Chat request failed: ${response.status} ${response.statusText}`);
+      }
+      if (!response.body) throw new Error('Chat response has no stream');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const consume = line => {
+        requestController.signal.throwIfAborted();
+        if (!line.trim()) return false;
+        let parsed;
+        try { parsed = JSON.parse(line); } catch {
+          throw new Error('Invalid JSON record in chat response');
+        }
+        if (parsed.message?.content) onChunk(parsed.message.content);
+        // A stop callback may run while processing a buffered record.
+        requestController.signal.throwIfAborted();
+        return Boolean(parsed.done);
+      };
+
+      try {
+        while (true) {
+          requestController.signal.throwIfAborted();
+          const { done, value } = await reader.read();
+          requestController.signal.throwIfAborted();
+          buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+          let newline;
+          while ((newline = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newline);
+            buffer = buffer.slice(newline + 1);
+            if (consume(line)) return;
+          }
+          if (done) {
+            if (buffer.trim()) consume(buffer);
+            return;
           }
         }
+      } finally {
+        // Stop transport on completion/errors, including a done record before EOF.
+        try { await reader.cancel(); } catch { /* Aborted bodies are already closed. */ }
+        reader.releaseLock();
       }
     } finally {
-      reader.releaseLock();
+      if (this.abortController === requestController) this.abortController = null;
     }
   }
   
@@ -329,23 +352,22 @@ class ServerManager {
     }
   }
   
-  async fetchWithTimeout(url, options, timeout = 30000) {
+  async fetchWithTimeout(url, options = {}, timeout = 30000) {
+    options.signal?.throwIfAborted();
     const controller = new AbortController();
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, controller.signal])
+      : controller.signal;
     const id = setTimeout(() => controller.abort(), timeout);
-    
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal
-      });
-      clearTimeout(id);
-      return response;
+      return await fetch(url, { ...options, signal });
     } catch (error) {
-      clearTimeout(id);
-      if (error.name === 'AbortError') {
+      if (controller.signal.aborted && !options.signal?.aborted) {
         throw new Error('Request timeout');
       }
       throw error;
+    } finally {
+      clearTimeout(id);
     }
   }
 }
@@ -370,6 +392,11 @@ class ChatManager {
   
   removeLastMessage() {
     return this.messages.pop();
+  }
+
+  removeMessage(message) {
+    const index = this.messages.indexOf(message);
+    if (index !== -1) this.messages.splice(index, 1);
   }
   
   getMessages() {
@@ -873,6 +900,10 @@ class UIController {
       lastMessage.style.animation = 'fadeOut 0.3s ease-out';
       setTimeout(() => lastMessage.remove(), 300);
     }
+  }
+
+  removeMessage(messageElement) {
+    messageElement.remove();
   }
   
   clearMessages() {

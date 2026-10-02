@@ -19,7 +19,8 @@
 - Lint/format: keep simple; if using tools locally, prefer Prettier defaults.
 
 ## Testing Guidelines
-- Framework: none yet; prioritize manual smoke tests:
+- Run `node --check app.js` and `node --test test/server-manager.test.cjs` on Node 24; tests use fake fetch/streams and do not contact models.
+- Keep live/manual smoke tests separate:
   - Load page, select a model, send a message, receive a response.
   - Refresh: confirm state persists as intended (e.g., selected model/profile).
 - If you add unit tests, place them under `test/` mirroring `app.js` functions.

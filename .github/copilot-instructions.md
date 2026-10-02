@@ -4,7 +4,7 @@ Purpose: help AI coding agents be productive in this repo. Keep it simple, vanil
 
 Project snapshot
 - Stack: static HTML + CSS + JavaScript (no frameworks, no build step).
-- Entry points: `index.html` (UI), `styles.css` (light styling), `app.js` (all client logic). Files currently exist and are mostly empty.
+- Entry points: `index.html` (UI), `styles.css` (light styling), `app.js` (all client logic). The files contain an implemented browser prototype; see README.md for current scope.
 - Run: open `index.html` directly, or serve statically to avoid CORS/null-origin quirks.
 
 Dev workflows
@@ -22,22 +22,23 @@ Ollama integration (HTTP API)
 - List models for dropdown: GET {BASE}/api/tags → { models: [{ name, ... }] }.
 - Chat (preferred): POST {BASE}/api/chat with JSON:
   { model, messages:[{role:'system'|'user'|'assistant', content}], stream:true }
-  Response is NDJSON (one JSON object per line). Accumulate `message.content` (or `content`) until `done:true`.
-- Fallback (non-chat): POST {BASE}/api/generate with { model, prompt, stream:true }.
+  Response is NDJSON (one JSON object per line). Accumulate `message.content` until `done:true`.
+- The current application uses `/api/chat`; a `/api/generate` fallback is not implemented.
 
 Conventions to follow when adding code
 - Keep everything in `app.js` initially with a single `init()` run on DOMContentLoaded. Use small, named helpers (e.g., `loadModels()`, `sendMessage()`, `streamChat()`).
-- Persist small bits of state in `localStorage` under clear keys: `lanChat.serverUrl`, `lanChat.lastModel`, `lanChat.profiles` (array of { name, systemPrompt, defaults? }).
+- Persist small bits of state in `localStorage` under clear keys: `lan-chat-settings`, `lan-chat-profiles` and `lan-chat-theme`. Current model and conversation messages are not persisted.
 - Streaming: use `AbortController` to support a Stop button; parse NDJSON line-by-line via `ReadableStream` reader.
 - UI hooks: prefer predictable IDs in `index.html` like `serverUrl`, `modelSelect`, `profileSelect`, `messages`, `chatForm`, `chatInput`, `sendBtn`, `stopBtn`.
-- Defaults: model `gpt-oss`; base URL from input or `localStorage`, fallback to `http://localhost:11434`.
+- Defaults: select the first discovered model; base URL from settings, fallback to `http://localhost:11434`.
 
 Minimal examples (patterns to replicate)
 - Load models: fetch(`${base}/api/tags`).then(r=>r.json()).then(d=>d.models.map(m=>m.name))
 - Chat payload shape: { model, messages:[{role:'system',content:sys},{role:'user',content:user}], stream:true }
 
 Testing and debugging
-- Smoke tests in the browser: (1) models dropdown populates; (2) send “Hello” and see a streamed response; (3) Stop button cancels without console errors.
+- Node 24: `node --check app.js` and `node --test test/server-manager.test.cjs`; fake-network tests cover record boundaries, cancellation and generation ownership. No model calls or package install.
+- Smoke tests in the browser: (1) models dropdown populates; (2) send “Hello” and see a streamed response; (3) cancellation/error handling does not leave the UI generating. Do not claim a Stop control exists without checking the actual interface.
 - Common pitfalls: CORS with `file://` origin → use a static server; mixed content if accessing non-HTTPS hosts from secure origins.
 
 Repo decisions (keep consistent)
